@@ -43,9 +43,17 @@ def run_search_tests(
     engine = SearchEngine(builder)
 
     test_cases = [
+        # 仓颉标准库相关问题（Cangjie_StdLib）
+        ("local", "怎么将字符串中的浮点数转为Float64类型？"),
         ("local", "IncompatiblePackageException 在什么场景下会被抛出？"),
-        ("local", "Button 组件的 onClick 事件如何触发？"),
-        ("global", "请总结仓颉语言二进制兼容性检查的设计规则。"),
+        ("local", "仓颉语言中如何使用 ArrayList 存储和遍历元素？"),
+        ("local", "std.core 包提供哪些基础数据类型？"),
+        # HarmonyOS interface_sdk 相关问题
+        ("local", "interface_sdk 中 Button 组件如何处理点击事件？"),
+        ("local", "如何使用 Float64 类型的 parse 方法从字符串中解析浮点数？"),
+        # 全局架构问题
+        ("global", "请总结仓颉语言标准库的整体架构设计。"),
+        ("auto", "仓颉语言的核心包（std.core）包含哪些关键类和接口？"),
     ]
 
     for mode, question in test_cases:
@@ -60,6 +68,12 @@ def run_search_tests(
 
         print("\n" + "=" * 80)
         print(f"问题（mode={result.mode}）: {question}")
+        print(f"置信度: {result.confidence:.2%}")
+        if result.matched_entities:
+            entity_summary = ", ".join(
+                f"{eid}(d={d:.3f})" for eid, d in result.matched_entities[:3]
+            )
+            print(f"匹配实体: {entity_summary}")
         print("-" * 80)
         print(result.answer)
         print("-" * 80)
