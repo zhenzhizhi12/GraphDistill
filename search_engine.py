@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import networkx as nx
@@ -69,11 +69,17 @@ GLOBAL_ANSWER_PROMPT = """
 class SearchResult:
     """
     问答结果封装，包含自然语言答案与溯源信息。
+
+    新增字段：
+    - confidence: 0.0~1.0，基于向量相似度 + 子图密度估算的置信度；
+    - matched_entities: 检索命中的 (entity_id, distance) 列表，距离越小越相关。
     """
 
     answer: str
     mode: str  # "local" | "global" | "hybrid"
     sources: List[Dict[str, Any]]
+    confidence: float = 0.0
+    matched_entities: List[Tuple[str, float]] = field(default_factory=list)
 
 
 class SearchEngine:
@@ -101,20 +107,52 @@ class SearchEngine:
         max_distance: float = 1.5,
     ) -> Optional[str]:
         """
-        使用“向量检索”从用户问题中路由到最可能的核心实体 ID。
+        向后兼容接口：返回最匹配的单个实体 ID（内部委托给 _vector_route_intent_multi）。
+
+        如需多候选检索请直接调用 _vector_route_intent_multi。
+        """
+        results = self._vector_route_intent_multi(
+            query=query,
+            client=client,
+            embedding_model=embedding_model,
+            top_k=top_k,
+            max_distance=max_distance,
+        )
+        if not results:
+            return None
+        best_entity_id, best_distance = results[0]
+        logger.info(
+            "Vector intent routing (compat): best match entity_id=%s, distance=%.4f",
+            best_entity_id,
+            best_distance,
+        )
+        return best_entity_id
+
+    def _vector_route_intent_multi(
+        self,
+        query: str,
+        client: Any,
+        embedding_model: str,
+        top_k: int = 3,
+        max_distance: float = 1.5,
+    ) -> List[Tuple[str, float]]:
+        """
+        使用"向量检索"从用户问题中路由到最可能的多个核心实体。
 
         步骤：
         - 调用 embeddings.create 将 query 编码为向量；
-        - 在 GraphBuilder 维护的 FAISS 向量索引中执行最近邻检索；
-        - 若最近邻距离超过阈值，则认为匹配不可靠，返回 None。
+        - 在 GraphBuilder 维护的 FAISS 向量索引中执行 top_k 最近邻检索；
+        - 过滤掉距离超过阈值的候选，返回 (entity_id, distance) 列表。
+
+        返回列表按距离从小到大排序（越靠前越相关）。
         """
         if not self.builder.has_vector_index():
             logger.warning("Vector intent routing requested but vector index is not available.")
-            return None
+            return []
 
         text = (query or "").strip()
         if not text:
-            return None
+            return []
 
         import time
 
@@ -131,32 +169,165 @@ class SearchEngine:
                 last_exc = exc
                 wait = 1.5 * (2 ** attempt)
                 logger.warning(
-                    "Embedding for intent routing failed on attempt %d: %s; retry in %.1fs",
+                    "Embedding for multi-intent routing failed on attempt %d: %s; retry in %.1fs",
                     attempt + 1,
                     exc,
                     wait,
                 )
                 time.sleep(wait)
         else:
-            logger.error("Embedding for intent routing permanently failed: %s", last_exc)
-            return None
+            logger.error("Embedding for multi-intent routing permanently failed: %s", last_exc)
+            return []
 
         results = self.builder.search_by_embedding(vec, top_k=top_k)
-        if not results:
-            return None
-
-        best_entity_id, best_distance = results[0]
+        candidates = [(eid, dist) for eid, dist in results if dist <= max_distance]
         logger.info(
-            "Vector intent routing: best match entity_id=%s, distance=%.4f (threshold=%.4f)",
-            best_entity_id,
-            best_distance,
+            "Vector multi-intent routing: found %d/%d candidates within distance %.2f",
+            len(candidates),
+            len(results),
             max_distance,
         )
-        if best_distance > max_distance:
-            # 距离过大认为相关性不足，降级为“未匹配”
-            return None
+        return candidates
 
-        return best_entity_id
+    def _collect_multi_entity_subgraph(
+        self,
+        candidates: List[Tuple[str, float]],
+        max_hops: int = 2,
+        max_nodes: int = 80,
+    ) -> Tuple[Set[str], List[Dict[str, Any]], Dict[str, float]]:
+        """
+        合并多个候选实体的子图，返回节点集合、边列表和每个节点的综合得分。
+
+        综合得分 = 相似度分数（1/(1+distance)）× (1 + 图中心性)，
+        用于上下文中节点的重排序，使最相关的实体优先被 LLM 看到。
+        若合并后节点数超过 max_nodes，则按得分截断。
+        """
+        g = self.builder.graph
+
+        # 预计算度中心性作为图重要性权重（归一化到 0~1）
+        try:
+            centrality: Dict[str, float] = nx.degree_centrality(g)
+        except Exception:  # noqa: BLE001
+            centrality = {}
+
+        entity_scores: Dict[str, float] = {}
+        all_node_ids: Set[str] = set()
+        edge_set: Set[Tuple[str, str, str]] = set()
+        all_edges: List[Dict[str, Any]] = []
+
+        for eid, dist in candidates:
+            sim_score = 1.0 / (1.0 + dist)
+            node_ids, edges = self._collect_local_subgraph(eid, max_hops=max_hops)
+
+            for nid in node_ids:
+                node_centrality = centrality.get(nid, 0.0)
+                combined_score = sim_score * (1.0 + node_centrality)
+                if nid not in entity_scores or combined_score > entity_scores[nid]:
+                    entity_scores[nid] = combined_score
+
+            all_node_ids.update(node_ids)
+
+            for e in edges:
+                edge_key = (e["source_id"], e["target_id"], e.get("relation_type", ""))
+                if edge_key not in edge_set:
+                    edge_set.add(edge_key)
+                    all_edges.append(e)
+
+        # 节点过多时按综合得分截断，保留最相关的节点
+        if len(all_node_ids) > max_nodes:
+            sorted_nodes = sorted(entity_scores.items(), key=lambda x: x[1], reverse=True)
+            keep_nodes = {nid for nid, _ in sorted_nodes[:max_nodes]}
+            all_node_ids = keep_nodes
+            all_edges = [
+                e for e in all_edges
+                if e["source_id"] in keep_nodes and e["target_id"] in keep_nodes
+            ]
+
+        logger.info(
+            "Multi-entity subgraph: %d candidates → %d nodes, %d edges",
+            len(candidates),
+            len(all_node_ids),
+            len(all_edges),
+        )
+        return all_node_ids, all_edges, entity_scores
+
+    def _build_ranked_context(
+        self,
+        node_ids: Set[str],
+        edges: List[Dict[str, Any]],
+        node_scores: Dict[str, float],
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """
+        将节点与边组织成按综合得分（相似度 × 中心性）排序的文本上下文。
+
+        节点按得分从高到低排列，使 LLM 优先看到最相关的实体。
+        """
+        g = self.builder.graph
+        lines: List[str] = []
+        all_sources: List[Dict[str, Any]] = []
+
+        sorted_nodes = sorted(node_ids, key=lambda n: node_scores.get(n, 0.0), reverse=True)
+
+        lines.append("【相关实体（按相关性得分排序）】")
+        for nid in sorted_nodes:
+            data = g.nodes.get(nid, {})
+            entity_type = data.get("entity_type", "")
+            name = data.get("name", "")
+            content = (data.get("content") or "").strip()
+            sources = data.get("sources", []) or []
+            score = node_scores.get(nid, 0.0)
+
+            all_sources.extend(s for s in sources if s and s not in all_sources)
+
+            lines.append(f"- ID: {nid}  (type={entity_type}, name={name}, score={score:.3f})")
+            if content:
+                lines.append(f"  描述: {content}")
+
+        if edges:
+            lines.append("")
+            lines.append("【实体间关系】")
+        for e in edges:
+            s = e["source_id"]
+            t = e["target_id"]
+            rtype = e.get("relation_type", "")
+            evidences = e.get("evidences", []) or []
+
+            lines.append(f"- {s} -[{rtype}]-> {t}")
+            for ev in evidences[:3]:
+                lines.append(f"  evidence: {ev}")
+
+        context = "\n".join(lines)
+        return context, all_sources
+
+    def _compute_confidence(
+        self,
+        candidates: List[Tuple[str, float]],
+        node_ids: Set[str],
+        edges: List[Dict[str, Any]],
+    ) -> float:
+        """
+        基于以下因素计算搜索置信度（0.0~1.0）：
+
+        - 候选实体的平均相似度得分（sim_score = 1/(1+distance)）；
+        - 是否存在高置信核心实体（distance < 0.5）；
+        - 子图密度（edge_count / node_count）。
+
+        各因素权重：相似度 50%，高置信奖励 30%，子图密度 20%。
+        """
+        if not candidates:
+            return 0.0
+
+        avg_sim = sum(1.0 / (1.0 + d) for _, d in candidates) / len(candidates)
+        has_close_match = any(d < 0.5 for _, d in candidates)
+        density = len(edges) / max(len(node_ids), 1)
+        density_score = min(density / 3.0, 1.0)
+
+        confidence = (
+            avg_sim * 0.5
+            + (0.3 if has_close_match else 0.0)
+            + density_score * 0.2
+        )
+        return min(round(confidence, 4), 1.0)
 
     def _collect_local_subgraph(
         self,
@@ -254,30 +425,39 @@ class SearchEngine:
         model: str,
         question: str,
         embedding_model: Optional[str] = None,
+        top_k: int = 3,
     ) -> Optional[SearchResult]:
         """
-        使用“本地图搜索”模式回答问题。
+        使用"本地图搜索"模式回答问题（优化版：多候选实体 + 融合子图 + 重排序）。
+
+        优化点：
+        1. 多候选实体检索（top_k=3~5），避免只取最近邻时遗漏相关实体；
+        2. 多实体子图合并，融合多个相关实体的 1~2 跳邻居；
+        3. 基于相似度 × 图中心性的综合得分对上下文节点重排序；
+        4. 计算并返回置信度评分。
         """
         embedding_model = embedding_model or model
-        entity_id = self._vector_route_intent(
+
+        candidates = self._vector_route_intent_multi(
             query=question,
             client=client,
             embedding_model=embedding_model,
-            top_k=1,
+            top_k=top_k,
         )
-        if not entity_id:
+        if not candidates:
             logger.info(
-                "Local search: vector routing failed to find a confident core entity; "
+                "Local search: vector routing found no confident candidates; "
                 "fall back to global mode if enabled."
             )
             return None
 
-        node_ids, edges = self._collect_local_subgraph(entity_id, max_hops=2)
+        node_ids, edges, node_scores = self._collect_multi_entity_subgraph(candidates)
         if not node_ids:
-            logger.info("Local search: entity_id not found in graph: %s", entity_id)
+            logger.info("Local search: subgraph is empty for candidates: %s", candidates)
             return None
 
-        context, sources = self._build_local_context(node_ids, edges)
+        context, sources = self._build_ranked_context(node_ids, edges, node_scores)
+        confidence = self._compute_confidence(candidates, node_ids, edges)
 
         try:
             response = client.chat.completions.create(  # type: ignore[call-arg]
@@ -288,88 +468,23 @@ class SearchEngine:
                 ],
                 temperature=0.2,
             )
-            content = response.choices[0].message.content or ""  # type: ignore[assignment]
+            content_str = response.choices[0].message.content or ""  # type: ignore[assignment]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Local answer LLM call failed: %s", exc, exc_info=True)
             return None
 
-        answer = content.strip()
+        answer = content_str.strip()
         if not answer:
             return None
 
-        return SearchResult(answer=answer, mode="local", sources=sources)
+        return SearchResult(
+            answer=answer,
+            mode="local",
+            sources=sources,
+            confidence=confidence,
+            matched_entities=candidates,
+        )
 
-    # ------------------------------------------------------------------
-    # 社会搜索：社区发现 + 群落摘要 + 全局问答
-    # ------------------------------------------------------------------
-
-    def _detect_communities(self) -> List[Set[str]]:
-        """
-        使用 networkx 的社区发现算法对图做划分。
-
-        优先使用 louvain_communities（若可用），否则回退到 greedy_modularity_communities。
-        """
-        g = self.builder.graph
-        if g.number_of_nodes() == 0:
-            return []
-
-        undirected = g.to_undirected()
-
-        # 优先尝试 Louvain（在较新版本 networkx 中提供）
-        try:
-            from networkx.algorithms.community import louvain_communities  # type: ignore
-
-            communities = louvain_communities(undirected)
-        except Exception:  # noqa: BLE001
-            from networkx.algorithms.community import greedy_modularity_communities
-
-            communities = greedy_modularity_communities(undirected)
-
-        return [set(c) for c in communities]
-
-    def _summarize_community(
-        self,
-        client: Any,
-        model: str,
-        nodes: Sequence[str],
-    ) -> Optional[str]:
-        """
-        使用 LLM 为某个社区生成架构级摘要。
-        """
-        g = self.builder.graph
-        lines: List[str] = []
-        for nid in nodes:
-            data = g.nodes.get(nid, {})
-            entity_type = data.get("entity_type", "")
-            name = data.get("name", "")
-            content = (data.get("content") or "").strip()
-            if not content:
-                continue
-            lines.append(f"- [{entity_type}] {name or nid}: {content}")
-            if len("".join(lines)) > 4000:
-                break
-
-        if not lines:
-            return None
-
-        community_text = "\n".join(lines)
-
-        try:
-            response = client.chat.completions.create(  # type: ignore[call-arg]
-                model=model,
-                messages=[
-                    {"role": "system", "content": GLOBAL_COMMUNITY_SUMMARY_PROMPT},
-                    {"role": "user", "content": community_text},
-                ],
-                temperature=0.2,
-            )
-            content = response.choices[0].message.content or ""  # type: ignore[assignment]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Community summary LLM call failed: %s", exc, exc_info=True)
-            return None
-
-        summary = content.strip()
-        return summary or None
 
     def _answer_global(
         self,
@@ -433,7 +548,7 @@ class SearchEngine:
         if not answer:
             return None
 
-        return SearchResult(answer=answer, mode="global", sources=all_sources)
+        return SearchResult(answer=answer, mode="global", sources=all_sources, confidence=0.5)
 
     # ------------------------------------------------------------------
     # 统一对外接口
