@@ -419,6 +419,82 @@ class SearchEngine:
         context = "\n".join(lines)
         return context, all_sources
 
+    def _keyword_fallback_candidates(
+        self,
+        query: str,
+        top_k: int = 5,
+    ) -> List[Tuple[str, float]]:
+        """
+        关键词回退检索：当向量索引不可用或向量路由无结果时，通过关键词匹配
+        在图谱实体的 name 和 content 字段中检索最相关的实体。
+
+        匹配策略：
+        - 将查询文本拆分为 token（英文单词 + 中文词，长度≥2）；
+        - name/entity_id 中的命中权重 = 3，content 中的命中权重 = 1；
+        - 以加权命中分数的负值作为伪"距离"（分数越高，距离越小）；
+        - 返回 (entity_id, pseudo_distance) 列表，距离越小越相关。
+        """
+        import re
+
+        g = self.builder.graph
+        if not g.nodes:
+            return []
+
+        # 提取查询中的关键词
+        tokens: List[str] = []
+        # 英文词（含驼峰词整体保留）
+        for word in re.findall(r"[A-Za-z][a-z0-9]*(?:[A-Z][a-z0-9]*)*", query):
+            tokens.append(word.lower())
+        # 数字+字母组合（如 Float64、Int32）
+        for token in re.findall(r"[A-Za-z]+\d+", query):
+            tokens.append(token.lower())
+        # 中文关键词 —— 对每段连续中文字符做 2-gram 滑动窗口
+        _stop_chars = set("的了是在有和与对从通过")
+        for char_seq in re.findall(r"[\u4e00-\u9fff]+", query):
+            # 取所有相邻 2 字组合（共 len-1 个）
+            for i in range(len(char_seq) - 1):
+                chunk = char_seq[i : i + 2]
+                if not any(c in _stop_chars for c in chunk):
+                    tokens.append(chunk)
+
+        # 去重
+        tokens = list(dict.fromkeys(tokens))
+
+        if not tokens:
+            return []
+
+        scored: List[Tuple[str, float]] = []
+        for nid, data in g.nodes(data=True):
+            name = (data.get("name") or "").lower()
+            content = (data.get("content") or "").lower()
+            entity_id_lower = nid.lower()
+            name_haystack = f"{entity_id_lower} {name}"
+
+            # 名称/ID 命中权重 3，内容命中权重 1
+            name_hits = sum(3 for tok in tokens if tok in name_haystack)
+            content_hits = sum(1 for tok in tokens if tok in content)
+            total_score = name_hits + content_hits
+
+            if total_score > 0:
+                scored.append((nid, total_score))
+
+        # 按加权得分降序，取前 top_k
+        scored.sort(key=lambda x: x[1], reverse=True)
+        if not scored:
+            return []
+        max_score = scored[0][1]
+        candidates = [
+            (nid, float(max_score - score + 0.01))
+            for nid, score in scored[:top_k]
+        ]
+        logger.info(
+            "Keyword fallback: found %d candidates (top weighted score=%.1f) for query: %s",
+            len(candidates),
+            max_score,
+            query[:60],
+        )
+        return candidates
+
     def _answer_local(
         self,
         client: Any,
@@ -434,7 +510,8 @@ class SearchEngine:
         1. 多候选实体检索（top_k=3~5），避免只取最近邻时遗漏相关实体；
         2. 多实体子图合并，融合多个相关实体的 1~2 跳邻居；
         3. 基于相似度 × 图中心性的综合得分对上下文节点重排序；
-        4. 计算并返回置信度评分。
+        4. 计算并返回置信度评分；
+        5. 当向量索引不可用时，自动回退到关键词匹配检索。
         """
         embedding_model = embedding_model or model
 
@@ -447,7 +524,14 @@ class SearchEngine:
         if not candidates:
             logger.info(
                 "Local search: vector routing found no confident candidates; "
-                "fall back to global mode if enabled."
+                "trying keyword fallback."
+            )
+            candidates = self._keyword_fallback_candidates(question, top_k=top_k)
+
+        if not candidates:
+            logger.info(
+                "Local search: keyword fallback also found no candidates; "
+                "will fall back to global mode if enabled."
             )
             return None
 

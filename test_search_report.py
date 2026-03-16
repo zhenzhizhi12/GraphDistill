@@ -207,6 +207,103 @@ def run_graph_structure_tests(builder) -> List[Dict[str, Any]]:
         "detail": f"Relation types: {dict(sorted(rel_counts.items(), key=lambda x: x[1], reverse=True)[:10])}",
     })
 
+    # 数据源分布统计
+    source_counts: Dict[str, int] = {}
+    for nid, data in g.nodes(data=True):
+        for src in (data.get("sources") or []):
+            preset = src.get("preset", "")
+            if not preset:
+                # 从路径推断数据源
+                fp = str(src.get("file_path", "") or src.get("test_dir", ""))
+                if "cangjie_runtime" in fp or "Cangjie_StdLib" in fp:
+                    preset = "Cangjie_StdLib"
+                elif "interface_sdk" in fp:
+                    preset = "interface_sdk_cangjie"
+                else:
+                    preset = "other"
+            source_counts[preset] = source_counts.get(preset, 0) + 1
+            break
+
+    results.append({
+        "test_type": "source_distribution",
+        "passed": len(source_counts) > 0,
+        "detail": f"Source presets: {dict(sorted(source_counts.items(), key=lambda x: x[1], reverse=True))}",
+    })
+
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 关键词回退搜索测试（无 LLM）
+# ─────────────────────────────────────────────────────────────────────────────
+def run_keyword_fallback_tests(builder) -> List[Dict[str, Any]]:
+    """
+    不调用 LLM，仅测试关键词回退检索能否命中正确实体。
+    用于验证在向量索引不可用时，关键词回退逻辑的有效性。
+    """
+    from search_engine import SearchEngine  # type: ignore
+
+    engine = SearchEngine(builder)
+    results = []
+
+    keyword_cases = [
+        {
+            "id": "kw_01",
+            "question": "怎么将字符串中的浮点数转为Float64类型？",
+            "expected_entity_contains": ["float64", "parse"],
+        },
+        {
+            "id": "kw_02",
+            "question": "IncompatiblePackageException 在什么场景下会被抛出？",
+            "expected_entity_contains": ["incompatiblepackageexception"],
+        },
+        {
+            "id": "kw_03",
+            "question": "仓颉语言中如何使用 ArrayList 存储和遍历元素？",
+            "expected_entity_contains": ["arraylist"],
+        },
+        {
+            "id": "kw_04",
+            "question": "Button 组件的 onClick 事件如何触发？",
+            "expected_entity_contains": ["button", "onclick"],
+        },
+        {
+            "id": "kw_05",
+            "question": "如何使用 Float64 类型的 parse 方法从字符串中解析浮点数？",
+            "expected_entity_contains": ["float64", "parse"],
+        },
+        {
+            "id": "kw_06",
+            "question": "HashMap 如何存储和查找键值对？",
+            "expected_entity_contains": ["hashmap"],
+        },
+    ]
+
+    for case in keyword_cases:
+        candidates = engine._keyword_fallback_candidates(case["question"], top_k=5)
+        candidate_ids = [eid.lower() for eid, _ in candidates]
+
+        # 检查是否有任何候选实体 ID 包含期望的关键词
+        expected = case["expected_entity_contains"]
+        hits = [
+            kw for kw in expected
+            if any(kw.lower() in cid for cid in candidate_ids)
+        ]
+        passed = len(hits) >= 1 and len(candidates) > 0
+
+        top3_info = [
+            f"{eid}(d={dist:.2f})" for eid, dist in candidates[:3]
+        ]
+        results.append({
+            "id": case["id"],
+            "question": case["question"],
+            "passed": passed,
+            "expected_keywords": expected,
+            "keyword_hits": hits,
+            "top3_candidates": top3_info,
+            "total_candidates": len(candidates),
+        })
+
     return results
 
 
@@ -302,6 +399,7 @@ def generate_report(
     structure_results: List[Dict[str, Any]],
     search_results: Optional[List[Dict[str, Any]]],
     output_path: Path,
+    keyword_fallback_results: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """将测试结果写入 Markdown 格式的测试报告。"""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -310,6 +408,16 @@ def generate_report(
     lines.append("# GraphDistill 搜索优化测试报告")
     lines.append("")
     lines.append(f"> 生成时间：{ts}")
+    lines.append("")
+    lines.append(
+        "本报告涵盖两个核心数据源的知识检索测试："
+    )
+    lines.append(
+        "- **Cangjie_StdLib**：`cangjie_runtime.git` (branch: release/1.0, subdir: std/doc/libs)"
+    )
+    lines.append(
+        "- **interface_sdk_cangjie**：`interface_sdk_cangjie.git` (branch: master, subdir: api)"
+    )
     lines.append("")
 
     # ── 1. 图谱概览 ──────────────────────────────────────────────────────────
@@ -320,7 +428,8 @@ def generate_report(
     lines.append(f"| 实体数量 | {graph_stats.get('num_entities', 'N/A')} |")
     lines.append(f"| 关系数量 | {graph_stats.get('num_relationships', 'N/A')} |")
     lines.append(f"| 弱连通分量数 | {graph_stats.get('num_weakly_connected_components', 'N/A')} |")
-    lines.append(f"| 向量索引 | {'已构建' if graph_stats.get('has_vector_index') else '未构建'} |")
+    lines.append(f"| 向量索引 | {'✅ 已构建' if graph_stats.get('has_vector_index') else '❌ 未构建（需运行 build_vector_index.py）'} |")
+    lines.append(f"| Embedding 模型 | Qwen/Qwen3-Embedding-8B |")
     lines.append("")
 
     # ── 2. 图结构测试 ─────────────────────────────────────────────────────────
@@ -339,9 +448,31 @@ def generate_report(
         lines.append(f"| {r.get('test_type', '')} | {status} | {detail} |")
     lines.append("")
 
-    # ── 3. 搜索测试 ───────────────────────────────────────────────────────────
+    # ── 3. 关键词回退检索测试（无 LLM）────────────────────────────────────────
+    if keyword_fallback_results:
+        lines.append("## 3. 关键词回退检索测试（无 LLM）")
+        lines.append("")
+        lines.append(
+            "验证在向量索引不可用时，关键词回退逻辑（`_keyword_fallback_candidates`）能否定位到正确的图谱实体。"
+        )
+        lines.append("")
+        kw_passed = sum(1 for r in keyword_fallback_results if r.get("passed"))
+        lines.append(f"**通过率**: {kw_passed}/{len(keyword_fallback_results)}")
+        lines.append("")
+        lines.append("| ID | 问题 | 通过 | 期望关键词 | 命中 | Top-3候选实体 |")
+        lines.append("|----|------|------|-----------|------|--------------|")
+        for r in keyword_fallback_results:
+            status = "✅" if r.get("passed") else "❌"
+            q = r["question"][:40] + ("…" if len(r["question"]) > 40 else "")
+            expected_str = ", ".join(r.get("expected_keywords", []))
+            hits_str = ", ".join(r.get("keyword_hits", []))
+            top3 = " \\| ".join(r.get("top3_candidates", [])[:3])
+            lines.append(f"| {r['id']} | {q} | {status} | {expected_str} | {hits_str} | {top3} |")
+        lines.append("")
+
+    # ── 4. 搜索测试 ───────────────────────────────────────────────────────────
     if search_results:
-        lines.append("## 3. 搜索问答测试结果")
+        lines.append("## 4. 搜索问答测试结果")
         lines.append("")
 
         total = len(search_results)
@@ -422,21 +553,25 @@ def generate_report(
             lines.append("")
 
     else:
-        lines.append("## 3. 搜索问答测试")
+        lines.append("## 4. 搜索问答测试")
         lines.append("")
         lines.append(
             "> ⚠️ 搜索测试已跳过（未提供 SILICONFLOW_API_KEY 或使用了 --skip-llm）。"
         )
         lines.append(
-            "> 请设置 `SILICONFLOW_API_KEY` 环境变量后重新运行以获取完整测试结果。"
+            "> 如需完整测试，请按以下步骤操作："
         )
+        lines.append("> ")
+        lines.append("> 1. 设置 API Key：`export SILICONFLOW_API_KEY=<your_key>`")
+        lines.append("> 2. 构建向量索引：`python build_vector_index.py`")
+        lines.append("> 3. 运行完整测试：`python test_search_report.py`")
         lines.append("")
 
-    # ── 4. 优化总结 ───────────────────────────────────────────────────────────
-    lines.append("## 4. 搜索优化策略总结")
+    # ── 5. 优化总结 ───────────────────────────────────────────────────────────
+    lines.append("## 5. 搜索优化策略总结")
     lines.append("")
     lines.append(
-        "本次对 `search_engine.py` 进行了以下优化，旨在提升回答质量和覆盖度："
+        "本次对 `search_engine.py`、`main.py`、`test_search_report.py` 进行了以下优化："
     )
     lines.append("")
     lines.append(
@@ -474,6 +609,11 @@ def generate_report(
             "`_vector_route_intent` 委托给多候选版本",
             "不破坏现有调用代码，平滑升级",
         ),
+        (
+            "关键词回退检索（新增）",
+            "`_keyword_fallback_candidates`：名称命中权重3，内容命中权重1",
+            "向量索引不可用时自动降级，保证本地搜索不会空返回",
+        ),
     ]
     for opt_name, impl, effect in optimizations:
         lines.append(f"| {opt_name} | {impl} | {effect} |")
@@ -495,13 +635,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--graph-json",
         type=str,
-        default="test_core_extraction_unified_std_api.json",
-        help="知识图谱 JSON 文件路径（默认：test_core_extraction_unified_std_api.json）",
+        default=None,
+        help=(
+            "知识图谱 JSON 文件路径。"
+            "默认优先使用 test_graph_with_vectors.json（含向量索引），"
+            "若不存在则回退到 test_core_extraction_unified_std_api.json。"
+        ),
     )
     parser.add_argument(
         "--skip-llm",
         action="store_true",
         help="跳过 LLM 调用，仅测试图结构（无需 API Key）",
+    )
+    parser.add_argument(
+        "--build-index",
+        action="store_true",
+        help=(
+            "若加载的图谱没有向量索引，则自动调用 Embedding API 构建向量索引。"
+            "需要 SILICONFLOW_API_KEY 环境变量。"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -514,7 +666,24 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    graph_path = Path(args.graph_json)
+
+    # ── 确定图谱文件路径（优先使用带向量索引版本）────────────────────────────
+    if args.graph_json:
+        graph_path = Path(args.graph_json)
+    else:
+        vector_path = Path("test_graph_with_vectors.json")
+        fallback_path = Path("test_core_extraction_unified_std_api.json")
+        if vector_path.exists():
+            graph_path = vector_path
+            logger.info("使用带向量索引的图谱文件：%s", graph_path)
+        else:
+            graph_path = fallback_path
+            logger.info(
+                "test_graph_with_vectors.json 不存在，回退到：%s "
+                "（建议先运行 build_vector_index.py 构建向量索引）",
+                graph_path,
+            )
+
     output_path = Path(args.output)
 
     # ── 加载图谱 ──────────────────────────────────────────────────────────────
@@ -523,12 +692,52 @@ def main() -> None:
     # has_vector_index 是方法，不是 stats 的一部分，补充进去
     graph_stats["has_vector_index"] = builder.has_vector_index()
 
+    # ── 可选：在线构建向量索引 ─────────────────────────────────────────────────
+    if args.build_index and not builder.has_vector_index() and not args.skip_llm:
+        api_key = os.getenv("SILICONFLOW_API_KEY", "")
+        if not api_key:
+            logger.warning("--build-index 需要 SILICONFLOW_API_KEY，但未设置，跳过索引构建。")
+        else:
+            try:
+                from openai import OpenAI  # type: ignore
+                from main import BASE_URL, EMBEDDING_MODEL  # type: ignore
+
+                _client_for_index = OpenAI(base_url=BASE_URL, api_key=api_key)
+                logger.info("正在在线构建向量索引（模型：%s）...", EMBEDDING_MODEL)
+                builder.build_vector_index(
+                    client=_client_for_index,
+                    embedding_model=EMBEDDING_MODEL,
+                )
+                if builder.has_vector_index():
+                    # 保存到带向量索引的文件，供下次直接加载
+                    _index_output = Path("test_graph_with_vectors.json")
+                    builder.save_json(_index_output)
+                    logger.info("向量索引已构建并保存到：%s", _index_output)
+                    graph_stats["has_vector_index"] = True
+                else:
+                    logger.warning("向量索引构建后仍不可用，请检查 API Key 和网络。")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("在线构建向量索引失败：%s", exc, exc_info=True)
+
     # ── 图结构测试 ─────────────────────────────────────────────────────────────
     logger.info("Running graph structure tests ...")
     structure_results = run_graph_structure_tests(builder)
     for r in structure_results:
         status = "PASS" if r.get("passed") else "FAIL"
         logger.info("[%s] %s: %s", status, r.get("test_type"), r.get("detail", "")[:100])
+
+    # ── 关键词回退检索测试（无 LLM） ───────────────────────────────────────────
+    logger.info("Running keyword fallback tests ...")
+    keyword_fallback_results = run_keyword_fallback_tests(builder)
+    for r in keyword_fallback_results:
+        status = "PASS" if r.get("passed") else "FAIL"
+        logger.info(
+            "[%s] %s: hits=%s top1=%s",
+            status,
+            r.get("id"),
+            r.get("keyword_hits"),
+            r.get("top3_candidates", ["(none)"])[0] if r.get("top3_candidates") else "(none)",
+        )
 
     # ── 搜索测试（可选）──────────────────────────────────────────────────────
     search_results: Optional[List[Dict[str, Any]]] = None
@@ -565,6 +774,7 @@ def main() -> None:
         structure_results=structure_results,
         search_results=search_results,
         output_path=output_path,
+        keyword_fallback_results=keyword_fallback_results,
     )
 
 

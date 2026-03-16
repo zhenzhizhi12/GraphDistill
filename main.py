@@ -29,7 +29,7 @@ logger = logging.getLogger("graphdistill.main")
 BASE_URL = "https://api.siliconflow.cn/v1"
 MODEL = "Pro/zai-org/GLM-4.7"
 # 默认的向量路由 Embedding 模型（适配 SiliconFlow OpenAI-兼容接口）
-EMBEDDING_MODEL = "BAAI/bge-m3"
+EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-8B"
 
 DOC_PRESETS: Dict[str, Dict[str, str]] = {
     "Cangjie_Guide": {
