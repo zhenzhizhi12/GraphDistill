@@ -1,0 +1,7 @@
+networkx
+gitpython
+openai
+numpy
+faiss-cpu
+tree-sitter~=0.25
+

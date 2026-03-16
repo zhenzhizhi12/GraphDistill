@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="$PROJECT_DIR$/temp_repos/CangjieTreeSitter" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/temp_repos/Cangjie_Guide" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/temp_repos/Cangjie_StdLib" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/temp_repos/Cangjie_StdX" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/temp_repos/Cangjie_Tools" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/temp_repos/HarmonyOS_Cangjie" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/temp_repos/interface_sdk_cangjie" vcs="Git" />
+  </component>
+</project>
