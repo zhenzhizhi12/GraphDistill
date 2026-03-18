@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 from pydantic import ValidationError
 
-from pydantic_schema import DocumentGraph, Entity, Relationship
-from index_parser import parse_index_markdown
+from .pydantic_schema import DocumentGraph, Entity, Relationship
+from .index_parser import parse_index_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +179,7 @@ def sliding_window_chunks(
 WHITESPACE_REGEX = re.compile(r"\s+", re.UNICODE)
 
 # 统一使用 entity_id_normalizer 模块的归一化函数
-from entity_id_normalizer import normalize_entity_id
+from .entity_id_normalizer import normalize_entity_id
 
 
 def _normalize_whitespace(s: str) -> str:

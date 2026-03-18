@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """
 调试脚本：直接用 tree_sitter_cangjie 打印 .cj.d 文件的 AST 结构（使用 Python 绑定，不依赖 CLI）。
@@ -119,4 +119,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

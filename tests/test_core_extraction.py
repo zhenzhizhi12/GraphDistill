@@ -2,15 +2,19 @@
 """测试特定目录下的文档提取"""
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+# 添加根目录到 Python 路径，以正确导入 core/ 和其他模块
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from openai import OpenAI
 
-from cjd_parser import parse_cjd_ast
-from extractor import extract_graph_from_text
-from graph_builder import GraphBuilder
-from index_parser import parse_index_markdown
+from core.cjd_parser import parse_cjd_ast
+from core.extractor import extract_graph_from_text
+from core.graph_builder import GraphBuilder
+from core.index_parser import parse_index_markdown
 from main import BASE_URL, MODEL, iter_source_files, try_init_cangjie_language
 
 logging.basicConfig(
@@ -225,7 +229,7 @@ def test_std_and_api_unified(limit: int | None = None) -> None:
     _run_three_tracks_on_root(builder=builder, client=client, test_dir=api_root, limit=limit)
 
     # 统一图谱输出为一个 JSON
-    output_path = Path("test_core_extraction_unified_std_api.json")
+    output_path = Path(__file__).parent.parent / "data" / "test_core_extraction_unified_std_api.json"
     logger.info("\n" + "=" * 80)
     logger.info("保存统一图谱结果到: %s", output_path)
     logger.info("=" * 80)

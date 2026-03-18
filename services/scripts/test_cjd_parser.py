@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """
 简单的 cjd_parser 评估脚本（不依赖 Tree-sitter 绑定，主要测试兜底解析质量）。
@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from cjd_parser import parse_cjd_ast
-from pydantic_schema import DocumentGraph
+from core.cjd_parser import parse_cjd_ast
+from core.pydantic_schema import DocumentGraph
 
 
 SDK_API_DIR = ROOT / "temp_repos" / "interface_sdk_cangjie" / "api"
@@ -60,4 +60,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

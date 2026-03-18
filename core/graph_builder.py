@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Tuple, Optional
 import networkx as nx
 import numpy as np
 
-from pydantic_schema import DocumentGraph, Entity
+from .pydantic_schema import DocumentGraph, Entity
 
 try:
     import faiss  # type: ignore[import-not-found]

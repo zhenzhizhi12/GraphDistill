@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """
 WSL / Linux 侧的 Cangjie AST 解析微服务。
@@ -36,12 +36,12 @@ from typing import Any, Dict
 from pydantic import ValidationError
 
 # 确保能导入项目根目录的模块（WSL 环境）
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from cjd_parser import parse_cjd_ast
-from pydantic_schema import DocumentGraph
+from core.cjd_parser import parse_cjd_ast
+from core.pydantic_schema import DocumentGraph
 
 logger = logging.getLogger("cjd_ast_service")
 logging.basicConfig(
@@ -156,4 +156,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

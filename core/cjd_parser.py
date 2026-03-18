@@ -25,8 +25,8 @@ from urllib.request import Request, urlopen
 
 from pydantic import ValidationError
 
-from entity_id_normalizer import normalize_entity_id
-from pydantic_schema import DocumentGraph, Entity, Relationship
+from .entity_id_normalizer import normalize_entity_id
+from .pydantic_schema import DocumentGraph, Entity, Relationship
 
 logger = logging.getLogger(__name__)
 

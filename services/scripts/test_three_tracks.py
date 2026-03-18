@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 三轨道集成测试脚本（低成本调试版）。
 
@@ -20,16 +20,16 @@ import sys
 from pathlib import Path
 
 # 确保能导入项目根目录的模块（将项目根目录提前插入 sys.path）
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from openai import OpenAI
 
-from cjd_parser import parse_cjd_ast
-from extractor import extract_graph_from_text
-from graph_builder import GraphBuilder
-from index_parser import parse_index_markdown
+from core.cjd_parser import parse_cjd_ast
+from core.extractor import extract_graph_from_text
+from core.graph_builder import GraphBuilder
+from core.index_parser import parse_index_markdown
 from main import BASE_URL, MODEL, try_init_cangjie_language
 
 logging.basicConfig(
@@ -267,3 +267,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
