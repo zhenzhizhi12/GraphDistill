@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GraphDistill - Knowledge Graph Visualizer</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            background: #0a0e27;
+            color: #00ffff;
+        }
+
+        #app {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        #graph-container {
+            flex: 1;
+            position: relative;
+            background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
+        }
+
+        #graph {
+            width: 100%;
+            height: 100%;
+        }
+
+        .filter-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(10, 14, 39, 0.95);
+            border: 1px solid #00ffff;
+            border-radius: 8px;
+            padding: 15px;
+            z-index: 1000;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.3);
+            max-width: 250px;
+        }
+
+        .filter-panel h3 {
+            color: #00ffff;
+            font-size: 14px;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .filter-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .filter-item:hover {
+            color: #fff;
+        }
+
+        .filter-item input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: #00ffff;
+        }
+
+        .color-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        #inspector {
+            width: 380px;
+            background: rgba(10, 14, 39, 0.98);
+            border-left: 2px solid #00ffff;
+            padding: 20px;
+            overflow-y: auto;
+            transform: translateX(100%);
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: fixed;
+            right: 0;
+            top: 0;
+            height: 100vh;
+            z-index: 1001;
+            backdrop-filter: blur(10px);
+            box-shadow: -5px 0 30px rgba(0, 255, 255, 0.2);
+        }
+
+        #inspector.active {
+            transform: translateX(0);
+        }
+
+        .inspector-section {
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid rgba(0, 255, 255, 0.2);
+        }
+
+        .inspector-section:last-child {
+            border-bottom: none;
+        }
+
+        .inspector-label {
+            color: #00ffff;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 10px;
+        }
+
+        .inspector-value {
+            color: #fff;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .inspector-value code {
+            background: rgba(0, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            color: #ff00ff;
+        }
+
+        .inspector-title {
+            color: #00ffff;
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 5px;
+            text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+        }
+
+        .inspector-type {
+            display: inline-block;
+            background: linear-gradient(135deg, #00ffff, #0080ff);
+            color: #0a0e27;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 20px;
+        }
+
+        .close-btn {
+            float: right;
+            background: none;
+            border: none;
+            color: #00ffff;
+            font-size: 24px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            line-height: 1;
+        }
+
+        .close-btn:hover {
+            color: #ff00ff;
+            transform: rotate(90deg);
+        }
+
+        .source-link {
+            display: block;
+            background: rgba(255, 0, 255, 0.1);
+            border: 1px solid #ff00ff;
+            color: #ff00ff;
+            padding: 8px 12px;
+            border-radius: 6px;
+            margin-top: 8px;
+            text-decoration: none;
+            font-size: 12px;
+            transition: all 0.3s ease;
+        }
+
+        .source-link:hover {
+            background: rgba(255, 0, 255, 0.2);
+            transform: translateX(5px);
+        }
+
+        .evidence-item {
+            background: rgba(0, 255, 255, 0.05);
+            border-left: 3px solid #00ffff;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .evidence-text {
+            color: #e0e0e0;
+            font-size: 13px;
+            line-height: 1.5;
+            font-style: italic;
+        }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: #00ffff;
+            font-size: 24px;
+        }
+
+        .loading::after {
+            content: '';
+            width: 40px;
+            height: 40px;
+            border: 3px solid #00ffff;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 15px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 255, 255, 0.05);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: linear-gradient(135deg, #00ffff, #ff00ff);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: linear-gradient(135deg, #ff00ff, #00ffff);
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div id="graph-container">
+            <div class="filter-panel">
+                <h3>实体类型过滤器</h3>
+                <div class="filter-group" id="filter-group"></div>
+            </div>
+            <div id="graph"></div>
+        </div>
+        <div id="inspector">
+            <button class="close-btn" onclick="closeInspector()">&times;</button>
+            <div id="inspector-content"></div>
+        </div>
+    </div>
+
+    <script>
+        const COLOR_PALETTE = {
+            'Module': '#00ffff',
+            'Class': '#ff00ff',
+            'Struct': '#ffff00',
+            'Interface': '#00ff00',
+            'Enum': '#ff6600',
+            'Macro': '#6600ff',
+            'Function': '#0080ff',
+            'Property': '#ff0080',
+            'Exception': '#ff0000',
+            'Concept': '#80ff00',
+            'Keyword': '#00ff80',
+            'UI_Component': '#ff8000',
+            'UI_Modifier': '#8000ff',
+            'Lifecycle_Hook': '#008080',
+            'Permission': '#800000',
+            'CLI_Command': '#000080',
+            'Config_Option': '#808000',
+            'CodeSnippet': '#0066cc'
+        };
+
+        let graphData = { nodes: [], links: [] };
+        let chart = null;
+        let selectedTypes = new Set(Object.keys(COLOR_PALETTE));
+        let currentHoverNode = null;
+        let activeFilters = new Set();
+
+        const DATA_CANDIDATES = [
+            'data/test_core_extraction_unified_std_api.json',
+            'test_core_extraction_unified_std_api.json'
+        ];
+
+        async function loadData() {
+            try {
+                let response = null;
+                let lastError = null;
+
+                for (const path of DATA_CANDIDATES) {
+                    try {
+                        const candidateResponse = await fetch(path, { cache: 'no-store' });
+                        if (candidateResponse.ok) {
+                            response = candidateResponse;
+                            break;
+                        }
+                        lastError = new Error(`HTTP ${candidateResponse.status} while loading ${path}`);
+                    } catch (error) {
+                        lastError = error;
+                    }
+                }
+
+                if (!response) {
+                    throw lastError || new Error('No data file could be loaded');
+                }
+
+                const data = await response.json();
+                processData(data);
+                initializeChart();
+                initializeFilters();
+            } catch (error) {
+                console.error('加载数据失败:', error);
+                document.body.innerHTML = `<div class="loading">加载失败：${DATA_CANDIDATES.join(' / ')}</div>`;
+            }
+        }
+
+        function processData(data) {
+            const entityMap = new Map(data.entities.map(e => [e.entity_id, e]));
+            
+            graphData.nodes = data.entities.map(entity => ({
+                id: entity.entity_id,
+                name: entity.name,
+                type: entity.entity_type,
+                content: entity.content,
+                color: COLOR_PALETTE[entity.entity_type] || '#888888'
+            }));
+
+            graphData.links = data.relationships.map(rel => {
+                const source = entityMap.get(rel.source_id);
+                const target = entityMap.get(rel.target_id);
+                return {
+                    source: rel.source_id,
+                    target: rel.target_id,
+                    relationType: rel.relation_type,
+                    evidence: rel.evidence,
+                    value: 1
+                };
+            }).filter(link => link.source && link.target);
+        }
+
+        function initializeFilters() {
+            const filterGroup = document.getElementById('filter-group');
+            const types = [...new Set(graphData.nodes.map(n => n.type))];
+            
+            types.forEach(type => {
+                const item = document.createElement('label');
+                item.className = 'filter-item';
+                item.innerHTML = `
+                    <input type="checkbox" checked value="${type}">
+                    <span class="color-dot" style="background: ${COLOR_PALETTE[type] || '#888'}"></span>
+                    <span>${type}</span>
+                `;
+                item.querySelector('input').addEventListener('change', toggleFilter);
+                filterGroup.appendChild(item);
+            });
+        }
+
+        function toggleFilter(e) {
+            const type = e.target.value;
+            if (e.target.checked) {
+                selectedTypes.add(type);
+            } else {
+                selectedTypes.delete(type);
+            }
+            updateChart();
+        }
+
+        function updateChart() {
+            const filteredNodes = graphData.nodes.filter(n => selectedTypes.has(n.type));
+            const filteredNodeIds = new Set(filteredNodes.map(n => n.id));
+            const filteredLinks = graphData.links.filter(l => 
+                filteredNodeIds.has(l.source) && filteredNodeIds.has(l.target)
+            );
+
+            chart.setOption({
+                series: [{
+                    data: filteredNodes,
+                    links: filteredLinks
+                }]
+            });
+        }
+
+        function initializeChart() {
+            const graphDom = document.getElementById('graph');
+            chart = echarts.init(graphDom, null, { renderer: 'canvas' });
+
+            const option = {
+                backgroundColor: 'transparent',
+                tooltip: {
+                    formatter: function(params) {
+                        if (params.dataType === 'node') {
+                            return `
+                                <div style="padding: 10px;">
+                                    <strong style="color: #00ffff">${params.data.name}</strong><br/>
+                                    <span style="color: #888">Type: ${params.data.type}</span>
+                                </div>
+                            `;
+                        } else if (params.dataType === 'edge') {
+                            return `
+                                <div style="padding: 10px;">
+                                    <strong style="color: #00ffff">${params.data.relationType}</strong>
+                                </div>
+                            `;
+                        }
+                    },
+                    backgroundColor: 'rgba(10, 14, 39, 0.95)',
+                    borderColor: '#00ffff',
+                    borderWidth: 1,
+                    textStyle: { color: '#fff' }
+                },
+                series: [{
+                    type: 'graph',
+                    layout: 'force',
+                    data: graphData.nodes,
+                    links: graphData.links,
+                    roam: true,
+                    label: {
+                        show: true,
+                        position: 'right',
+                        formatter: '{b}',
+                        color: '#fff',
+                        fontSize: 12
+                    },
+                    edgeLabel: {
+                        show: true,
+                        formatter: '{c}',
+                        color: '#00ffff',
+                        fontSize: 10
+                    },
+                    force: {
+                        repulsion: 300,
+                        edgeLength: [100, 200]
+                    },
+                    lineStyle: {
+                        color: {
+                            type: 'linear',
+                            x: 0, y: 0, x2: 1, y2: 0,
+                            colorStops: [
+                                { offset: 0, color: 'rgba(0, 255, 255, 0.3)' },
+                                { offset: 1, color: 'rgba(255, 0, 255, 0.3)' }
+                            ]
+                        },
+                        width: 1.5,
+                        curveness: 0.1
+                    },
+                    emphasis: {
+                        focus: 'adjacency',
+                        lineStyle: {
+                            width: 3
+                        }
+                    },
+                    itemStyle: {
+                        shadowColor: 'rgba(0, 255, 255, 0.5)',
+                        shadowBlur: 10
+                    },
+                    categories: Object.keys(COLOR_PALETTE).map(type => ({
+                        name: type
+                    }))
+                }]
+            };
+
+            chart.setOption(option);
+
+            chart.on('click', function(params) {
+                if (params.dataType === 'node') {
+                    showNodeInspector(params.data);
+                } else if (params.dataType === 'edge') {
+                    showEdgeInspector(params.data);
+                }
+            });
+
+            chart.on('mouseover', function(params) {
+                if (params.dataType === 'node') {
+                    currentHoverNode = params.data.id;
+                }
+            });
+
+            chart.on('globalout', function() {
+                currentHoverNode = null;
+            });
+
+            window.addEventListener('resize', () => chart.resize());
+        }
+
+        function showNodeInspector(node) {
+            const inspector = document.getElementById('inspector');
+            const content = document.getElementById('inspector-content');
+            
+            content.innerHTML = `
+                <div class="inspector-section">
+                    <span class="inspector-title">${node.name}</span><br/>
+                    <span class="inspector-type">${node.type}</span>
+                </div>
+                
+                <div class="inspector-section">
+                    <div class="inspector-label">详细内容</div>
+                    <div class="inspector-value">${node.content}</div>
+                </div>
+
+                <div class="inspector-section">
+                    <div class="inspector-label">ID</div>
+                    <div class="inspector-value"><code>${node.id}</code></div>
+                </div>
+            `;
+            
+            inspector.classList.add('active');
+        }
+
+        function showEdgeInspector(edge) {
+            const inspector = document.getElementById('inspector');
+            const content = document.getElementById('inspector-content');
+            
+            const sourceNode = graphData.nodes.find(n => n.id === edge.source);
+            const targetNode = graphData.nodes.find(n => n.id === edge.target);
+            
+            content.innerHTML = `
+                <div class="inspector-section">
+                    <span class="inspector-title">${edge.relationType}</span>
+                </div>
+                
+                <div class="inspector-section">
+                    <div class="inspector-label">源节点</div>
+                    <div class="inspector-value">${sourceNode ? sourceNode.name : edge.source}</div>
+                    ${sourceNode ? `<div class="inspector-value" style="font-size: 12px; color: #888">${sourceNode.type}</div>` : ''}
+                </div>
+
+                <div class="inspector-section">
+                    <div class="inspector-label">目标节点</div>
+                    <div class="inspector-value">${targetNode ? targetNode.name : edge.target}</div>
+                    ${targetNode ? `<div class="inspector-value" style="font-size: 12px; color: #888">${targetNode.type}</div>` : ''}
+                </div>
+
+                <div class="inspector-section">
+                    <div class="inspector-label">证据</div>
+                    <div class="evidence-item">
+                        <div class="evidence-text">"${edge.evidence}"</div>
+                    </div>
+                </div>
+            `;
+            
+            inspector.classList.add('active');
+        }
+
+        function closeInspector() {
+            document.getElementById('inspector').classList.remove('active');
+        }
+
+        loadData();
+    </script>
+</body>
+</html>
